@@ -1,10 +1,21 @@
-use actix_web::{get, web, App, HttpResponse, HttpServer, ResponseError};
+use actix_web::{get, http::header, post, web, App, HttpResponse, HttpServer, ResponseError};
 use askama::Template;
-use thiserror::Error;
-
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
+use serde::Deserialize;
+use thiserror::Error;
+
+#[derive(Deserialize)]
+struct AddParams {
+    text: String,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+struct DeleteParams {
+    id: u32,
+}
 
 struct TodoEntry {
     id: u32,
@@ -54,7 +65,7 @@ async fn index(db: web::Data<Pool<SqliteConnectionManager>>) -> Result<HttpRespo
         entries.push(row?);
     }
 
-    let html = IndexTemplate{entries};
+    let html = IndexTemplate { entries };
     let response_body = html.render()?;
     Ok(HttpResponse::Ok()
         .content_type("text/html")
@@ -66,6 +77,33 @@ async fn index(db: web::Data<Pool<SqliteConnectionManager>>) -> Result<HttpRespo
     戻り値の型がResultなのでOkで包む
     */
     // Ok(HttpResponse::Ok().body(response_body))
+}
+
+#[cfg(feature = "serde")]
+#[post("/add")]
+async fn add_todo(
+    params: web::Form<AddParams>,
+    db: web::Data<r2d2::Pool<SqliteConnectionManager>>,
+) -> Result<HttpResponse, MyError> {
+    let conn = db.get()?;
+    // let text = params.text.clone();
+    conn.execute("INSERT INTO todo (text) VALUES (?)", &[&params.text])?;
+    Ok(HttpResponse::SeeOther()
+        .header(header::LOCATION, "/")
+        .finish())
+}
+
+#[cfg(feature = "serde")]
+#[post("/delete")]
+async fn delete_todo(
+    params: web::Form<DeleteParams>,
+    db: web::Data<r2d2::Pool<SqliteConnectionManager>>,
+) -> Result<HttpResponse, MyError> {
+    let conn = db.get()?;
+    conn.execute("DELETE FROM todo WHERE id = ?", &[&params.id])?;
+    Ok(HttpResponse::SeeOther()
+        .header(header::LOCATION, "/")
+        .finish())
 }
 
 #[actix_web::main]
@@ -84,9 +122,15 @@ async fn main() -> Result<(), actix_web::Error> {
     )
     .expect("Failed to create a table `todo`.");
     // ここでコネクションループを渡す
-    HttpServer::new(move || App::new().service(index).app_data(pool.clone()))
-        .bind("0.0.0.0:8080")?
-        .run()
-        .await?;
+    HttpServer::new(move || {
+        App::new()
+            .service(index)
+            .service(add_todo)
+            .service(delete_todo)
+            .app_data(pool.clone())
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await?;
     Ok(())
 }
